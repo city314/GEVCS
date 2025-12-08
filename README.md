@@ -1,80 +1,81 @@
-# GEVCS for Face Biometrics (Ross-style)
+# GEVCS for Face Biometrics (Ross-style) + Deep Host Selection
 
-Repo này demo **Gray-level Extended Visual Cryptography Scheme (GEVCS)** cho ảnh mặt, dựa trên ý tưởng của Ross (biometric + visual crypto).
+repo này demo **Gray-level Extended Visual Cryptography Scheme (GEVCS)** cho ảnh mặt, dựa trên ý tưởng của Ross (biometric + visual crypto), và thêm bước **chọn host bằng deep learning (ArcFace / DeepFace)**.
 
-Có 2 chế độ:
+có 2 chế độ:
 
 - `(2,2)` – 2 share, chồng cả 2 mới khôi phục secret  
-- `(2,3)` – 3 share, **bất kỳ 2 share** chồng lên đều khôi phục được secret
+- `(2,3)` – 3 share, **bất kỳ 2 share** chồng lên đều khôi phục được secret  
+
+deep learning chỉ dùng ở **bước chọn host**; còn phần GEVCS (halftone + generate share + overlay) vẫn giống bản gốc.
 
 ---
 
-## 1. Cấu trúc repo
+## 1. cấu trúc repo
 
 ```text
 .
-├── biometric_ross.py    # script chính: load data, chạy demo, log kết quả
+├── biometric_ross.py    # script chính: load data, chọn host (deep), chạy demo, log kết quả
 ├── gevcs_core.py        # core GEVCS: halftone + generate share + overlay
 ├── data/
 │   ├── private_face.png # ảnh chủ (secret)
 │   ├── host1.png        # host 1
 │   ├── host2.png        # host 2
 │   ├── host3.png        # host 3
-│   └── host_db/         # folder chứa host (nếu dùng dạng DB)
+│   └── host_db/         # folder chứa host (nếu muốn mở rộng DB)
 └── out_2of2/, out_2of3/ # thư mục kết quả demo
 ```
 
 ---
 
-## 2. Môi trường & thư viện
+## 2. môi trường & thư viện
 
-Tối thiểu:
+tối thiểu:
 
 - Python 3.8+
 - `numpy`
 - `opencv-python` (`cv2`)
-- `Pillow` (nếu cần đọc/ghi ảnh kiểu khác)
+- `Pillow`
+- **`deepface`** (gồm ArcFace model + TensorFlow ở backend)
 
-Cài nhanh:
+cài nhanh:
 
 ```bash
-pip install numpy opencv-python pillow
+pip install numpy opencv-python pillow deepface
 ```
 
+lần chạy đầu `deepface` sẽ tự tải trọng số ArcFace về `~/.deepface/weights/`, nên hơi lâu 1 chút.
+
 ---
 
-## 3. Chuẩn bị dữ liệu
+## 3. chuẩn bị dữ liệu
 
-Thư mục `data/`:
+thư mục `data/`:
 
 - `private_face.png` : ảnh mặt chủ cần bảo vệ (secret)
-- `host1.png`, `host2.png`, `host3.png` : ảnh host dùng để “giấu” secret
-- các ảnh nên:
+- `host1.png`, `host2.png`, `host3.png` : các ảnh host
+- yêu cầu nhẹ:
   - khuôn mặt nhìn thẳng (frontal)
   - nền tương đối đơn giản
-  - crop gần vuông, độ phân giải đủ lớn (nhưng không quá nhoè)
+  - crop gần vuông, đủ rõ (không quá mờ)
 
-Code sẽ tự resize về đúng size khi chạy (mặc định `256×256`).
+code sẽ tự resize về kích thước cố định (mặc định `256×256`).
 
 ---
 
-## 4. Tiền xử lý & metric
+## 4. tiền xử lý, deep host selection & metric
 
-### 4.1. Tiền xử lý ảnh
+### 4.1. tiền xử lý ảnh
 
-Trong `biometric_ross.py`:
+trong `biometric_ross.py`:
 
-1. **Load & resize**
+1. **load & resize**
 
-   - Tất cả ảnh (private + host) được load dạng grayscale và resize về kích thước cố định, ví dụ:
+   - tất cả ảnh (private + host) load dạng grayscale, resize về `size = (256, 256)`.
 
-     ```python
-     size = (256, 256)
-     ```
+2. **halftone (Floyd–Steinberg)**
 
-2. **Halftone (Floyd–Steinberg)**
-
-   - Ảnh xám được chuyển sang dạng **halftone đen–trắng** bằng thuật toán Floyd–Steinberg:
+   - ảnh xám chuyển sang **halftone đen–trắng**:
 
      ```python
      priv_h   # secret sau halftone
@@ -83,50 +84,89 @@ Trong `biometric_ross.py`:
      host3_h  # ...
      ```
 
-   - Đây mới là ảnh thật sự tham gia vào GEVCS.  
-     `private_face.png` chỉ để nhìn cho dễ, còn “secret” trong scheme là `priv_h`.
+   - secret thật sự trong scheme chính là `priv_h` chứ không phải ảnh gốc.
 
-### 4.2. Metric: simple_face_distance
+### 4.2. deep host selection (ArcFace / DeepFace)
 
-- Hàm `simple_face_distance(a, b)` (trong `biometric_ross.py`) dùng **MSE trên ảnh halftone/grayscale**:
+bước mới so với bản cũ:
 
-  > d(a, b) = MSE(a, b)
+- dùng `DeepFace` với model **`ArcFace`** để trích xuất **embedding khuôn mặt**.
 
-- Tất cả các log kiểu:
+trong code:
 
-  - `d(host1_h, priv_h)`
-  - `distance(rec_12, priv_h)`
-  - `share1 vs host1 = ..., vs priv_h = ...`
+```python
+from deepface import DeepFace
 
-  đều dùng metric này.
+def face_embedding_from_gray(img_gray):
+    # img_gray: ảnh mặt grayscale 256×256
+    # convert sang RGB rồi cho vào DeepFace.represent(...)
+    reps = DeepFace.represent(
+        img_rgb,
+        model_name="ArcFace",
+        enforce_detection=False,  # ảnh đã crop sẵn
+    )
+    emb = reps[0]["embedding"]  # vector float32 ~512 chiều
+```
+
+hàm chọn host:
+
+```python
+def select_n_hosts_by_deep(private_face, db, n):
+    priv_emb = face_embedding_from_gray(private_face)
+    # với mỗi host trong db:
+    #   - tính embedding
+    #   - tính L2 distance giữa priv_emb và host_emb
+    # chọn ra n host gần nhất
+```
+
+- với `(2,2)`: chọn 2 host gần nhất  
+- với `(2,3)`: chọn 3 host gần nhất  
+
+**lưu ý**: deep learning chỉ dùng để chọn host. đánh giá scheme (ACCEPT / REJECT) vẫn dùng metric MSE trên ảnh halftone (mục 4.3).
+
+### 4.3. metric: simple_face_distance (MSE halftone)
+
+hàm `simple_face_distance(a, b)` dùng **MSE trên ảnh halftone / grayscale**:
+
+> `d(a, b) = MSE(a, b)`
+
+tất cả các log:
+
+- `d(host*_h, priv_h)`
+- `share1 vs host1 = ..., vs priv_h = ...`
+- `distance(rec_12, priv_h) = ...`
+
+đều dùng metric này.
 
 ---
 
-## 5. Baseline của dữ liệu
+## 5. baseline của dữ liệu (MSE)
 
-Với bộ 4 ảnh trong `data/` hiện tại (private + 3 host), ta đo:
+với bộ 4 ảnh trong `data/` (private + 3 host), sau halftone:
 
-- `d(host1_h, priv_h) ≈ 32584`
-- `d(host2_h, priv_h) ≈ 33103`
-- `d(host3_h, priv_h) ≈ 32681`
+- `d(host1_h, priv_h) ≈ 33k`
+- `d(host2_h, priv_h) ≈ 33k`
+- `d(host3_h, priv_h) ≈ 33k` (dao động 32k–33k)
 
-Có thể xem đây là:
+coi như:
 
-> **baseline impostor distance** của bộ dữ liệu:  
-> khoảng cách giữa **secret** và **một người khác bất kỳ** ≈ **32k–33k** (sau halftone, MSE).
+> **baseline impostor distance** (sau halftone, MSE)  
+> khoảng cách giữa **secret** và **một người khác** ≈ **32k–33k**.
 
-Baseline này dùng để:
+baseline này dùng để:
 
-- so xem **reconstructed** có *gần secret hơn host* hay không
+- so xem ảnh **reconstructed** có gần secret hơn host không  
 - chọn **ngưỡng (threshold)** cho bước xác thực (ACCEPT / REJECT)
 
+deep host selection không thay baseline MSE này; nó chỉ đảm bảo host được chọn **giống mặt** secret hơn (theo embedding), nên share nhìn trực quan hợp lý hơn.
+
 ---
 
-## 6. Cách chạy demo
+## 6. cách chạy demo
 
-### 6.1. Demo (2,2)
+### 6.1. demo (2,2)
 
-Trong `biometric_ross.py`, phần `if __name__ == "__main__":` đã có sẵn lời gọi:
+trong `biometric_ross.py`:
 
 ```python
 run_demo(
@@ -135,53 +175,57 @@ run_demo(
     host_db_folder="data/host_db",
     out_folder="out_2of2",
     size=(256, 256),
-    m=9,               # số subpixel (kích thước block)
+    m=9,               # số subpixel mỗi block
     threshold=23000.0, # ngưỡng verify đề xuất cho (2,2)
 )
 ```
 
-Chạy:
+chạy:
 
 ```bash
 python biometric_ross.py
 ```
 
-Kết quả:
+kết quả:
 
-- Thư mục `out_2of2/` sẽ có:
-  - `private_halftone.png`  – secret sau halftone
-  - `host1_halftone.png`, `host2_halftone.png`, ...
+- `out_2of2/` chứa:
+  - `private_halftone.png`
+  - `host*_halftone.png`
   - `share1.png`, `share2.png`
-  - `reconstructed_12.png` – overlay share1 + share2
+  - `reconstructed_12.png`
 
-- Log trên terminal sẽ in các distance:
+log trên terminal (ví dụ):
 
-  ```text
-  [2of2] d(host1_h, priv_h) = ...
-  [2of2] d(host2_h, priv_h) = ...
-  [2of2] share1 vs host1 = ..., vs priv_h = ...
-  [2of2] share2 vs host2 = ..., vs priv_h = ...
-  [2of2] d(rec_12, priv_h)  = ...
-  [2of2] d(rec_12, host1_h) = ...
-  [2of2] d(rec_12, host2_h) = ...
-  [2of2] distance(rec_12, priv_h) = ...
-  [2of2] ACCEPT / REJECT
-  ```
+```text
+[2of2] selected hosts: host1.png, host2.png   # chọn bằng deep (ArcFace)
+[2of2] d(host1_h, priv_h) = ...
+[2of2] d(host2_h, priv_h) = ...
 
-**Ý nghĩa (baseline):**
+[2of2] share1 vs host1 = ..., vs priv_h = ...
+[2of2] share2 vs host2 = ..., vs priv_h = ...
 
-- host vs secret: ~32k (impostor)  
-- reconstructed vs secret: ~17k–21k  
-- threshold 2of2 đề xuất: **~23k**
+[2of2] d(rec_12, priv_h)  = ...
+[2of2] d(rec_12, host1_h) = ...
+[2of2] d(rec_12, host2_h) = ...
+
+[2of2] distance(rec_12, priv_h) = ...
+[2of2] ACCEPT / REJECT
+```
+
+**diễn giải nhanh:**
+
+- host vs secret ≈ 32k–33k (impostor)  
+- reconstructed vs secret ≈ 15k–21k  
+- threshold gợi ý: **~23k**
 
 →  
 
 - `distance(rec_12, priv_h) < 23k` → ACCEPT  
 - `d(host*_h, priv_h) > 23k` → REJECT
 
-### 6.2. Demo (2,3)
+### 6.2. demo (2,3)
 
-Trong cùng file:
+tương tự:
 
 ```python
 run_demo(
@@ -195,24 +239,24 @@ run_demo(
 )
 ```
 
-Vẫn chạy:
+chạy:
 
 ```bash
 python biometric_ross.py
 ```
 
-Kết quả:
+kết quả:
 
-- Thư mục `out_2of3/` có:
+- `out_2of3/` có:
   - `private_halftone.png`
   - `share1.png`, `share2.png`, `share3.png`
-  - `reconstructed_12.png`
-  - `reconstructed_13.png`
-  - `reconstructed_23.png`
+  - `reconstructed_12.png`, `reconstructed_13.png`, `reconstructed_23.png`
 
-Log:
+log:
 
 ```text
+[2of3] selected hosts: host1.png, host2.png, host3.png   # chọn bằng deep
+
 [2of3] d(host1_h, priv_h) = ...
 [2of3] d(host2_h, priv_h) = ...
 [2of3] d(host3_h, priv_h) = ...
@@ -226,78 +270,70 @@ Log:
 [2of3] distance(rec_23, priv_h) = ...
 ```
 
-**Baseline 2of3:**
+**baseline 2of3:**
 
-- host vs secret: ~32k (giống trên)
-- rec_ij vs secret: ~ **8k–10k**
-- threshold đề xuất: **15k–20k** (code đang dùng 20k)
-
-→  
-
-- rec_ij < 20k → ACCEPT  
-- host_h > 20k → REJECT
+- host vs secret: ~32k–33k  
+- rec_ij vs secret: ~8k–10k  
+- threshold gợi ý: **15k–20k** (code đang dùng ~20k)
 
 ---
 
-## 7. Cách đọc log để biết scheme có “đúng” không
+## 7. cách đọc log (kèm deep host selection)
 
-### 7.1. Share có “leak secret” nhiều không?
+### 7.1. host được deep chọn có hợp lý không?
 
-Nhìn vào:
+- dòng:
+
+  ```text
+  selected hosts: host1.png, host2.png, ...
+  ```
+
+  cho biết những host có embedding ArcFace gần secret nhất.
+
+- nếu nhìn ảnh halftone mà thấy:
+  - pose, góc mặt, nền khá giống secret → deep selection đang hoạt động tốt.
+
+### 7.2. share có “leak secret” nhiều không?
+
+xem:
 
 ```text
 share1 vs host1 = A, vs priv_h = B
 ```
 
-- nếu `A << B` → share1 giống host hơn → **riêng tư hơn**
-- nếu `B << A` → share1 giống secret hơn → **leak nhiều hơn**
+- `A << B` → share1 giống host hơn, riêng tư hơn  
+- `B << A` → share1 giống secret hơn, leak nhiều hơn
 
-Trong config hiện tại:
+tuỳ mục tiêu demo / privacy mà chỉnh tham số trong `gevcs_core.py` cho phù hợp.
 
-- 2of2: 1 share nghiêng về host, 1 share hơi nghiêng về secret  
-- 2of3: cả 3 share đều gần secret hơn host (demo rõ mặt, privacy 1-share chưa mạnh, phù hợp demo hơn là production).
+### 7.3. reconstructed có “giống secret hơn host” không?
 
-### 7.2. Reconstructed có “giống secret hơn host” không?
-
-Check:
+check:
 
 ```text
 d(rec_ij, priv_h)  ?
 d(rec_ij, host*_h) ?
 ```
 
-- nếu `d(rec_ij, priv_h) < d(rec_ij, host*_h)` cho mọi host  
-  → overlay share đã **kéo về secret**, scheme ok.
+- yêu cầu tối thiểu:
 
-Đồng thời phải:
-
-- `d(rec_ij, priv_h)` **nhỏ hơn nhiều** baseline 32k  
-- `d(host*_h, priv_h)` ≈ 32k
-
----
-
-## 8. Chỉnh tham số
-
-Một vài tham số quan trọng trong `gevcs_core.py`:
-
-- `m` – số subpixel trong mỗi block (kích thước tile)
-  - m lớn → ảnh share/reconstructed mịn hơn nhưng file nặng hơn.
-- `nb_secret` – số subpixel dành cho secret (tỷ lệ với `d_secret**0.8 * m`)
-  - tăng hệ số (0.5 → 0.7 → 1.0):
-    - reconstructed rõ secret hơn
-    - share giống secret hơn (privacy giảm)
-  - giảm hệ số:
-    - share gần host hơn (privacy tăng)
-    - reconstructed mờ hơn, distance với secret tăng
-
-Khi đổi tham số / đổi dữ liệu, nên:
-
-1. Đo lại `d(host*_h, priv_h)` để lấy **baseline mới**.  
-2. Đo `d(rec_ij, priv_h)` với config mới.  
-3. Chọn lại threshold sao cho:
-
-   ```text
-   max( d(rec_ij, priv_h) ) < threshold < min( d(host*_h, priv_h) )
-   ```
+  ```text
+  d(rec_ij, priv_h) < d(rec_ij, host*_h)     # reconstruct kéo về secret
+  d(rec_ij, priv_h) << 32k                   # nhỏ hơn nhiều baseline impostor
+  d(host*_h, priv_h) ≈ 32k                   # host khác người
+  ```
 
 ---
+
+## 8. chỉnh tham số & hướng mở rộng
+
+- trong `gevcs_core.py`:
+  - `m`: số subpixel/block. tăng m → ảnh mịn hơn nhưng file nặng hơn.
+  - hệ số trong tính `nb_secret` điều khiển mức “trộn” secret vào host:
+    - tăng hệ số → reconstructed rõ hơn, share giống secret hơn  
+    - giảm hệ số → share an toàn hơn, reconstructed mờ hơn
+
+- có thể mở rộng:
+
+  - dùng model khác của deepface (`Facenet512`, `VGG-Face`, …) cho bước chọn host  
+  - dùng trực tiếp **khoảng cách embedding** làm metric verify (thay vì MSE) nếu muốn gần với hệ face recognition hơn.
