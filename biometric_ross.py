@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 from typing import List, Tuple
+from deepface import DeepFace
 
 from gevcs_core import (
     floyd_steinberg_halftone,
@@ -9,6 +10,27 @@ from gevcs_core import (
     overlay_shares,
     gevcs_generate_shares_2of3
 )
+# DEEP LEARNING BASED SELECTION
+def face_embedding_from_gray(img_gray: np.ndarray) -> np.ndarray:
+    """
+    img_gray: ảnh mặt đã crop + resize 256x256 grayscale
+    trả về: vector embedding dạng numpy array (ArcFace ~ 512 chiều)
+    """
+    # chuyển grayscale → RGB cho deepface
+    if img_gray.ndim == 2:
+        img_rgb = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
+    else:
+        img_rgb = cv2.cvtColor(img_gray, cv2.COLOR_BGR2RGB)
+
+    # lấy embedding, không ép detect vì ảnh đã crop sẵn
+    reps = DeepFace.represent(
+        img_rgb,
+        model_name="ArcFace",        # có thể đổi sang 'Facenet512', 'VGG-Face', ...
+        enforce_detection=False,
+    )
+
+    emb = np.array(reps[0]["embedding"], dtype=np.float32)
+    return emb
 
 def center_crop_square(img: np.ndarray) -> np.ndarray:
     """crop vuông ở giữa ảnh"""
@@ -74,6 +96,37 @@ def select_n_hosts_by_similarity(
     scores.sort(key=lambda x: x[0])
     if len(scores) < n:
         raise ValueError(f"need at least {n} host faces in db")
+    result = []
+    for i in range(n):
+        _, fname, img = scores[i]
+        result.append((fname, img))
+    return result
+## DEEP LEARNING BASED SELECTION
+def select_n_hosts_by_deep(
+    private_face: np.ndarray,
+    db: List[Tuple[str, np.ndarray]],
+    n: int,
+) -> List[Tuple[str, np.ndarray]]:
+    """
+    chọn n host gần private_face nhất theo embedding deep learning
+    db: list (fname, img_gray)
+    """
+    priv_emb = face_embedding_from_gray(private_face)
+    scores = []
+
+    for fname, img in db:
+        try:
+            emb = face_embedding_from_gray(img)
+        except ValueError:
+            # không detect được mặt thì bỏ qua
+            continue
+        d = np.linalg.norm(priv_emb - emb)  # L2 distance
+        scores.append((d, fname, img))
+
+    if len(scores) < n:
+        raise ValueError(f"need at least {n} usable host faces (detected)")
+
+    scores.sort(key=lambda x: x[0])
     result = []
     for i in range(n):
         _, fname, img = scores[i]
@@ -216,7 +269,7 @@ def run_demo(
 
     if scheme == "2of2":
         # chọn 2 host
-        selected = select_n_hosts_by_similarity(private_face, db, 2)
+        selected = select_n_hosts_by_deep(private_face, db, 2)
         (name1, host1), (name2, host2) = selected
         print(f"[2of2] selected hosts: {name1}, {name2}")
 
@@ -276,7 +329,7 @@ def run_demo(
 
     elif scheme == "2of3":
         # cần ít nhất 3 host trong db
-        selected = select_n_hosts_by_similarity(private_face, db, 3)
+        selected = select_n_hosts_by_deep(private_face, db, 3)
         (name1, host1), (name2, host2), (name3, host3) = selected
         print(f"[2of3] selected hosts: {name1}, {name2}, {name3}")
 
