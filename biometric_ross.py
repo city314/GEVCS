@@ -7,8 +7,8 @@ from gevcs_core import (
     floyd_steinberg_halftone,
     gevcs_generate_shares,
     overlay_shares,
-    gevcs_generate_shares_2of3
 )
+from simple_evaluator import SimpleVCSEvaluator
 
 def center_crop_square(img: np.ndarray) -> np.ndarray:
     """crop vuông ở giữa ảnh"""
@@ -273,72 +273,35 @@ def run_demo(
             print("[2of2] ACCEPT")
         else:
             print("[2of2] REJECT")
+        # overlay reconstruction
+        rec_12 = overlay_shares(share1, share2, op="and")
+        rec_resized = cv2.resize(rec_12, size, interpolation=cv2.INTER_AREA)
 
-    elif scheme == "2of3":
-        # cần ít nhất 3 host trong db
-        selected = select_n_hosts_by_similarity(private_face, db, 3)
-        (name1, host1), (name2, host2), (name3, host3) = selected
-        print(f"[2of3] selected hosts: {name1}, {name2}, {name3}")
-
-        host1_h = floyd_steinberg_halftone(host1)
-        host2_h = floyd_steinberg_halftone(host2)
-        host3_h = floyd_steinberg_halftone(host3)
-
-        # sinh 3 share
-        share1, share2, share3 = gevcs_generate_shares_2of3(
-            host1_h, host2_h, host3_h, priv_h, m=m
+        # Evaluate GE-VCS basic metrics
+        evaluator = SimpleVCSEvaluator()
+        results = evaluator.evaluate_all(
+            private_face,
+            host1,
+            host2,
+            share1,
+            share2,
+            rec_resized
         )
 
-        host1_h_resized = cv2.resize(host1_h, size, interpolation=cv2.INTER_AREA)
-        host2_h_resized = cv2.resize(host2_h, size, interpolation=cv2.INTER_AREA)
-        host3_h_resized = cv2.resize(host3_h, size, interpolation=cv2.INTER_AREA)
+        print("\n===== HOST QUALITY =====")
+        print("Host1 MSE:", results["host1_mse"])
+        print("Host2 MSE:", results["host2_mse"])
 
-        share1_resized = cv2.resize(share1, size, interpolation=cv2.INTER_AREA)
-        share2_resized = cv2.resize(share2, size, interpolation=cv2.INTER_AREA)
-        share3_resized = cv2.resize(share3, size, interpolation=cv2.INTER_AREA)
+        print("\n===== SHARE LEAKAGE =====")
+        print(f"Share1 leakage: {results['share1_leakage']} (variance={results['share1_variance']:.2f})")
+        print(f"Share2 leakage: {results['share2_leakage']} (variance={results['share2_variance']:.2f})")
 
-        # 1) host so với secret (đã halftone)
-        d_h1_priv = simple_face_distance(host1_h_resized, priv_h)
-        d_h2_priv = simple_face_distance(host2_h_resized, priv_h)
-        d_h3_priv = simple_face_distance(host3_h_resized, priv_h)
-        print(f"[2of3] d(host1_h, priv_h) = {d_h1_priv:.2f}")
-        print(f"[2of3] d(host2_h, priv_h) = {d_h2_priv:.2f}")
-        print(f"[2of3] d(host3_h, priv_h) = {d_h3_priv:.2f}")
+        print("\n===== RECONSTRUCTION QUALITY =====")
+        print("Reconstruction MSE:", results["reconstruction_mse"])
 
-        # 2) share so với host vs secret (chỉ để tham khảo, không bắt buộc)
-        d_s1_h1   = simple_face_distance(share1_resized, host1_h_resized)
-        d_s1_priv = simple_face_distance(share1_resized, priv_h)
-        d_s2_h2   = simple_face_distance(share2_resized, host2_h_resized)
-        d_s2_priv = simple_face_distance(share2_resized, priv_h)
-        d_s3_h3   = simple_face_distance(share3_resized, host3_h_resized)
-        d_s3_priv = simple_face_distance(share3_resized, priv_h)
-        print(f"[2of3] share1 vs host1 = {d_s1_h1:.2f}, vs priv_h = {d_s1_priv:.2f}")
-        print(f"[2of3] share2 vs host2 = {d_s2_h2:.2f}, vs priv_h = {d_s2_priv:.2f}")
-        print(f"[2of3] share3 vs host3 = {d_s3_h3:.2f}, vs priv_h = {d_s3_priv:.2f}")
 
-        path_s1 = os.path.join(out_folder, "share1.png")
-        path_s2 = os.path.join(out_folder, "share2.png")
-        path_s3 = os.path.join(out_folder, "share3.png")
-        cv2.imwrite(path_s1, share1)
-        cv2.imwrite(path_s2, share2)
-        cv2.imwrite(path_s3, share3)
-
-        # overlay từng cặp
-        rec_12 = overlay_shares(share1, share2, op="and")
-        rec_13 = overlay_shares(share1, share3, op="and")
-        rec_23 = overlay_shares(share2, share3, op="and")
-
-        cv2.imwrite(os.path.join(out_folder, "reconstructed_12.png"), rec_12)
-        cv2.imwrite(os.path.join(out_folder, "reconstructed_13.png"), rec_13)
-        cv2.imwrite(os.path.join(out_folder, "reconstructed_23.png"), rec_23)
-
-        # tính distance với secret đã halftone (priv_h) cho từng cặp
-        for name, rec in [("12", rec_12), ("13", rec_13), ("23", rec_23)]:
-            rec_resized = cv2.resize(rec, size, interpolation=cv2.INTER_AREA)
-            d = simple_face_distance(rec_resized, priv_h)
-            print(f"[2of3] distance(rec_{name}, priv_h) = {d:.2f}")
     else:
-        raise ValueError("scheme must be '2of2' or '2of3'")
+        raise ValueError("scheme must be '2of2'")
 
 if __name__ == "__main__":
     private_face_path = "data/private_face.png"
@@ -353,15 +316,4 @@ if __name__ == "__main__":
         size=(256, 256),
         m=9,
         threshold= 23000.0,
-    )
-
-    # demo (2,3): 3 share, bất kỳ 2 share đều khôi phục được
-    run_demo(
-        scheme="2of3",
-        private_face_path=private_face_path,
-        host_db_folder=host_db_folder,
-        out_folder="out_2of3",
-        size=(256, 256),
-        m=9,
-        threshold=20000.0,
     )

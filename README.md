@@ -5,7 +5,6 @@ Repo này demo **Gray-level Extended Visual Cryptography Scheme (GEVCS)** cho �
 Có 2 chế độ:
 
 - `(2,2)` – 2 share, chồng cả 2 mới khôi phục secret  
-- `(2,3)` – 3 share, **bất kỳ 2 share** chồng lên đều khôi phục được secret
 
 ---
 
@@ -21,7 +20,7 @@ Có 2 chế độ:
 │   ├── host2.png        # host 2
 │   ├── host3.png        # host 3
 │   └── host_db/         # folder chứa host (nếu dùng dạng DB)
-└── out_2of2/, out_2of3/ # thư mục kết quả demo
+└── out_2of2/ # thư mục kết quả demo
 ```
 
 ---
@@ -179,65 +178,7 @@ Kết quả:
 - `distance(rec_12, priv_h) < 23k` → ACCEPT  
 - `d(host*_h, priv_h) > 23k` → REJECT
 
-### 6.2. Demo (2,3)
 
-Trong cùng file:
-
-```python
-run_demo(
-    scheme="2of3",
-    private_face_path="data/private_face.png",
-    host_db_folder="data/host_db",
-    out_folder="out_2of3",
-    size=(256, 256),
-    m=9,
-    threshold=20000.0,  # ngưỡng đề xuất cho (2,3)
-)
-```
-
-Vẫn chạy:
-
-```bash
-python biometric_ross.py
-```
-
-Kết quả:
-
-- Thư mục `out_2of3/` có:
-  - `private_halftone.png`
-  - `share1.png`, `share2.png`, `share3.png`
-  - `reconstructed_12.png`
-  - `reconstructed_13.png`
-  - `reconstructed_23.png`
-
-Log:
-
-```text
-[2of3] d(host1_h, priv_h) = ...
-[2of3] d(host2_h, priv_h) = ...
-[2of3] d(host3_h, priv_h) = ...
-
-[2of3] share1 vs host1 = ..., vs priv_h = ...
-[2of3] share2 vs host2 = ..., vs priv_h = ...
-[2of3] share3 vs host3 = ..., vs priv_h = ...
-
-[2of3] distance(rec_12, priv_h) = ...
-[2of3] distance(rec_13, priv_h) = ...
-[2of3] distance(rec_23, priv_h) = ...
-```
-
-**Baseline 2of3:**
-
-- host vs secret: ~32k (giống trên)
-- rec_ij vs secret: ~ **8k–10k**
-- threshold đề xuất: **15k–20k** (code đang dùng 20k)
-
-→  
-
-- rec_ij < 20k → ACCEPT  
-- host_h > 20k → REJECT
-
----
 
 ## 7. Cách đọc log để biết scheme có “đúng” không
 
