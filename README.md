@@ -60,12 +60,6 @@ pip install -r requirements.txt
 this will install every third‑party package used by the **local modules** in this repo (`gevcs_core_v2.py`, `vcs_evaluator.py`, `perceptual_features.py`, ...).  
 the local files themselves are part of the repo, so you do **not** pip‑install them separately.
 
-if something is still missing, you can also install basic packages manually:
-
-```bash
-pip install opencv-python numpy pillow
-```
-
 ---
 
 ## 3. data preparation
