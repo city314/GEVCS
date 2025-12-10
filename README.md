@@ -1,244 +1,200 @@
-# GEVCS for Face Biometrics (Ross-style)
+# GEVCS biometric (2-of-2)
 
-Repo này demo **Gray-level Extended Visual Cryptography Scheme (GEVCS)** cho ảnh mặt, dựa trên ý tưởng của Ross (biometric + visual crypto).
+this repo contains a small demo for a **gray-level extended visual cryptography scheme (gevcs)** applied to **biometric privacy** for faces (2-of-2 scheme).
 
-Có 2 chế độ:
+a private face image is encoded into **2 shares (share1, share2)** that look like normal host images / noise. only when you stack the 2 shares together you can reconstruct the private face. each single share alone should not reveal the identity.
 
-- `(2,2)` – 2 share, chồng cả 2 mới khôi phục secret  
+the code follows the idea of ross & othman (2011) and nakajima & yamaguchi (extended vcs for natural images), but is implemented in a simple python pipeline.
 
 ---
 
-## 1. Cấu trúc repo
+## 1. project layout
 
 ```text
-.
-├── biometric_ross.py    # script chính: load data, chạy demo, log kết quả
-├── gevcs_core.py        # core GEVCS: halftone + generate share + overlay
+GEVCS/
 ├── data/
-│   ├── private_face.png # ảnh chủ (secret)
-│   ├── host1.png        # host 1
-│   ├── host2.png        # host 2
-│   ├── host3.png        # host 3
-│   └── host_db/         # folder chứa host (nếu dùng dạng DB)
-└── out_2of2/ # thư mục kết quả demo
+│   ├── host_db/          # database of host faces
+│   ├── private_face.png  # private face for demo
+│   └── out_2of2/         # outputs from cli demo
+│
+├── app.py                # streamlit web ui demo
+├── biometric_ross_v2.py  # main gevcs 2-of-2 pipeline (cli)
+├── deep_face_utils.py    # helper for deep face embeddings
+├── gevcs_core_v2.py      # core gevcs operations (halftone, shares, reconstruct)
+├── perceptual_features.py# vgg16 perceptual features for host selection
+├── simple_evaluator.py   # simple metrics (mse / variance, etc.)
+├── vcs_evaluator.py      # evaluator using insightface embeddings
+├── share1.png            # example share1
+├── share2.png            # example share2
+├── temp_private.png      # aligned private face used by app
+├── requirements.txt      # python dependencies
+└── README.md             # this file
 ```
 
 ---
 
-## 2. Môi trường & thư viện
+## 2. installation
 
-Tối thiểu:
+### 2.1 create environment
 
-- Python 3.8+
-- `numpy`
-- `opencv-python` (`cv2`)
-- `Pillow` (nếu cần đọc/ghi ảnh kiểu khác)
-
-Cài nhanh:
+recommend using python 3.9+ and a virtual environment.
 
 ```bash
-pip install numpy opencv-python pillow
+python -m venv .venv
+# linux / macos
+source .venv/bin/activate
+# windows
+# .venv\Scripts\activate
+```
+
+### 2.2 install dependencies
+
+all external libraries are listed in `requirements.txt`. this includes things like torch, torchvision, insightface, onnxruntime, streamlit, etc.
+
+just run:
+
+```bash
+pip install -r requirements.txt
+```
+
+this will install every third‑party package used by the **local modules** in this repo (`gevcs_core_v2.py`, `vcs_evaluator.py`, `perceptual_features.py`, ...).  
+the local files themselves are part of the repo, so you do **not** pip‑install them separately.
+
+if something is still missing, you can also install basic packages manually:
+
+```bash
+pip install opencv-python numpy pillow
 ```
 
 ---
 
-## 3. Chuẩn bị dữ liệu
+## 3. data preparation
 
-Thư mục `data/`:
+inside the `data/` folder:
 
-- `private_face.png` : ảnh mặt chủ cần bảo vệ (secret)
-- `host1.png`, `host2.png`, `host3.png` : ảnh host dùng để “giấu” secret
-- các ảnh nên:
-  - khuôn mặt nhìn thẳng (frontal)
-  - nền tương đối đơn giản
-  - crop gần vuông, độ phân giải đủ lớn (nhưng không quá nhoè)
+- `private_face.png`  
+  - face image used as the secret. can be gray or color; the code will convert to gray, align, and resize to 256x256.
 
-Code sẽ tự resize về đúng size khi chạy (mặc định `256×256`).
+- `host_db/`  
+  - folder of host face images. each file is one host. the pipeline will:
+    - center‑crop / resize to 256x256
+    - align faces using insightface
+    - compute perceptual features to select the best hosts
 
----
+- `out_2of2/`  
+  - output folder for the cli demo. after running the demo you will see:
+    - `share1.png`
+    - `share2.png`
+    - `reconstructed.png`
+    - optional intermediate/eval images
 
-## 4. Tiền xử lý & metric
-
-### 4.1. Tiền xử lý ảnh
-
-Trong `biometric_ross.py`:
-
-1. **Load & resize**
-
-   - Tất cả ảnh (private + host) được load dạng grayscale và resize về kích thước cố định, ví dụ:
-
-     ```python
-     size = (256, 256)
-     ```
-
-2. **Halftone (Floyd–Steinberg)**
-
-   - Ảnh xám được chuyển sang dạng **halftone đen–trắng** bằng thuật toán Floyd–Steinberg:
-
-     ```python
-     priv_h   # secret sau halftone
-     host1_h  # host1 sau halftone
-     host2_h  # ...
-     host3_h  # ...
-     ```
-
-   - Đây mới là ảnh thật sự tham gia vào GEVCS.  
-     `private_face.png` chỉ để nhìn cho dễ, còn “secret” trong scheme là `priv_h`.
-
-### 4.2. Metric: simple_face_distance
-
-- Hàm `simple_face_distance(a, b)` (trong `biometric_ross.py`) dùng **MSE trên ảnh halftone/grayscale**:
-
-  > d(a, b) = MSE(a, b)
-
-- Tất cả các log kiểu:
-
-  - `d(host1_h, priv_h)`
-  - `distance(rec_12, priv_h)`
-  - `share1 vs host1 = ..., vs priv_h = ...`
-
-  đều dùng metric này.
+you can replace `private_face.png` with your own image and add more images into `host_db/` to try different examples.
 
 ---
 
-## 5. Baseline của dữ liệu
+## 4. running the cli demo (biometric_ross_v2.py)
 
-Với bộ 4 ảnh trong `data/` hiện tại (private + 3 host), ta đo:
+`biometric_ross_v2.py` implements the 2-of-2 gevcs pipeline.
 
-- `d(host1_h, priv_h) ≈ 32584`
-- `d(host2_h, priv_h) ≈ 33103`
-- `d(host3_h, priv_h) ≈ 32681`
-
-Có thể xem đây là:
-
-> **baseline impostor distance** của bộ dữ liệu:  
-> khoảng cách giữa **secret** và **một người khác bất kỳ** ≈ **32k–33k** (sau halftone, MSE).
-
-Baseline này dùng để:
-
-- so xem **reconstructed** có *gần secret hơn host* hay không
-- chọn **ngưỡng (threshold)** cho bước xác thực (ACCEPT / REJECT)
-
----
-
-## 6. Cách chạy demo
-
-### 6.1. Demo (2,2)
-
-Trong `biometric_ross.py`, phần `if __name__ == "__main__":` đã có sẵn lời gọi:
+default entry:
 
 ```python
-run_demo(
-    scheme="2of2",
-    private_face_path="data/private_face.png",
-    host_db_folder="data/host_db",
-    out_folder="out_2of2",
-    size=(256, 256),
-    m=9,               # số subpixel (kích thước block)
-    threshold=23000.0, # ngưỡng verify đề xuất cho (2,2)
-)
+if __name__ == "__main__":
+    run_demo(
+        private_face_path="data/private_face.png",
+        host_db_folder="data/host_db",
+        out_folder="data/out_2of2",
+        size=(256, 256),
+        m=16,
+    )
 ```
 
-Chạy:
+to run:
 
 ```bash
-python biometric_ross.py
+python biometric_ross_v2.py
 ```
 
-Kết quả:
+what it does:
 
-- Thư mục `out_2of2/` sẽ có:
-  - `private_halftone.png`  – secret sau halftone
-  - `host1_halftone.png`, `host2_halftone.png`, ...
-  - `share1.png`, `share2.png`
-  - `reconstructed_12.png` – overlay share1 + share2
+1. **preprocess & align**
+   - load `private_face.png` and all hosts from `host_db/`
+   - convert to grayscale, center‑crop, resize to 256x256
+   - align faces using insightface (buffalo_l model)
 
-- Log trên terminal sẽ in các distance:
+2. **select 2 hosts**
+   - extract vgg16 perceptual features for each host and the private face
+   - compute l2 distances and pick the 2 closest hosts
 
-  ```text
-  [2of2] d(host1_h, priv_h) = ...
-  [2of2] d(host2_h, priv_h) = ...
-  [2of2] share1 vs host1 = ..., vs priv_h = ...
-  [2of2] share2 vs host2 = ..., vs priv_h = ...
-  [2of2] d(rec_12, priv_h)  = ...
-  [2of2] d(rec_12, host1_h) = ...
-  [2of2] d(rec_12, host2_h) = ...
-  [2of2] distance(rec_12, priv_h) = ...
-  [2of2] ACCEPT / REJECT
-  ```
+3. **generate shares (2-of-2 gevcs)**
+   - perform gray‑level preprocessing and halftoning
+   - encode the private face into 2 shares based on host images (parameter `m` is the number of subpixels per pixel, default 16)
 
-**Ý nghĩa (baseline):**
+4. **reconstruction**
+   - overlay share1 and share2 to reconstruct the face
+   - apply enhancement (normalization, contrast, sharpening) to improve visual quality
 
-- host vs secret: ~32k (impostor)  
-- reconstructed vs secret: ~17k–21k  
-- threshold 2of2 đề xuất: **~23k**
+5. **evaluation**
+   - use `vcs_evaluator.py` with insightface embeddings
+   - compute:
+     - distance between private face and each host (host similarity)
+     - distance between private face and reconstructed image (reconstruction quality)
+   - (leakage for each share is currently set to 0 in this version, i.e., we assume no identity from a single share)
 
-→  
+all resulting images are saved into `data/out_2of2/`.
 
-- `distance(rec_12, priv_h) < 23k` → ACCEPT  
-- `d(host*_h, priv_h) > 23k` → REJECT
-
-
-
-## 7. Cách đọc log để biết scheme có “đúng” không
-
-### 7.1. Share có “leak secret” nhiều không?
-
-Nhìn vào:
-
-```text
-share1 vs host1 = A, vs priv_h = B
-```
-
-- nếu `A << B` → share1 giống host hơn → **riêng tư hơn**
-- nếu `B << A` → share1 giống secret hơn → **leak nhiều hơn**
-
-Trong config hiện tại:
-
-- 2of2: 1 share nghiêng về host, 1 share hơi nghiêng về secret  
-- 2of3: cả 3 share đều gần secret hơn host (demo rõ mặt, privacy 1-share chưa mạnh, phù hợp demo hơn là production).
-
-### 7.2. Reconstructed có “giống secret hơn host” không?
-
-Check:
-
-```text
-d(rec_ij, priv_h)  ?
-d(rec_ij, host*_h) ?
-```
-
-- nếu `d(rec_ij, priv_h) < d(rec_ij, host*_h)` cho mọi host  
-  → overlay share đã **kéo về secret**, scheme ok.
-
-Đồng thời phải:
-
-- `d(rec_ij, priv_h)` **nhỏ hơn nhiều** baseline 32k  
-- `d(host*_h, priv_h)` ≈ 32k
+note: first run may be slow while models (vgg16 and buffalo_l) are downloaded.
 
 ---
 
-## 8. Chỉnh tham số
+## 5. running the streamlit app (app.py)
 
-Một vài tham số quan trọng trong `gevcs_core.py`:
+`app.py` provides a simple web ui for the same pipeline.
 
-- `m` – số subpixel trong mỗi block (kích thước tile)
-  - m lớn → ảnh share/reconstructed mịn hơn nhưng file nặng hơn.
-- `nb_secret` – số subpixel dành cho secret (tỷ lệ với `d_secret**0.8 * m`)
-  - tăng hệ số (0.5 → 0.7 → 1.0):
-    - reconstructed rõ secret hơn
-    - share giống secret hơn (privacy giảm)
-  - giảm hệ số:
-    - share gần host hơn (privacy tăng)
-    - reconstructed mờ hơn, distance với secret tăng
+run:
 
-Khi đổi tham số / đổi dữ liệu, nên:
+```bash
+streamlit run app.py
+```
 
-1. Đo lại `d(host*_h, priv_h)` để lấy **baseline mới**.  
-2. Đo `d(rec_ij, priv_h)` với config mới.  
-3. Chọn lại threshold sao cho:
+main steps inside the ui:
 
-   ```text
-   max( d(rec_ij, priv_h) ) < threshold < min( d(host*_h, priv_h) )
-   ```
+1. **upload private face**
+   - upload an image file
+   - the app shows:
+     - original image
+     - aligned + resized grayscale face
+     - halftone / binary version used by gevcs
+
+2. **load host_db and generate shares**
+   - specify folder path for `host_db` (default `data/host_db`)
+   - app:
+     - previews some host images
+     - automatically selects 2 hosts based on vgg16 perceptual distance
+     - generates `share1` and `share2` using the gevcs core
+
+3. **view shares**
+   - displays `share1` and `share2` side by side
+   - each share should look like a normal host / noisy image and not reveal the secret alone
+
+4. **reconstruction**
+   - overlays share1 and share2 to reconstruct the face
+   - shows the enhanced reconstruction (256x256)
+
+5. **evaluation**
+   - computes the same distances as in the cli demo
+   - prints:
+     - host1 distance
+     - host2 distance
+     - share1 leakage
+     - share2 leakage
+     - reconstruction distance
 
 ---
+
+## 6. notes
+
+- default resolution is 256x256; you can change `size` and `m` in `biometric_ross_v2.py` and `app.py` if you want to experiment.
+- gpu is optional but recommended if you run many images; otherwise cpu is still ok but slower.
+- this code is for study / research demo only, not production security.
+
